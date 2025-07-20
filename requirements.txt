@@ -1,0 +1,30 @@
+# --- Core & fast decode ---
+numpy==1.26.4
+Pillow==10.3.0
+opencv-python==4.9.0.80
+scikit-learn==1.4.2
+tqdm==4.66.4
+PyTurboJPEG==1.7.0          # TurboJPEG wheels for macOS/Linux/Windows
+
+# --- Torch stack ---
+torch==2.1.2
+torchvision==0.16.2
+facenet-pytorch==2.5.2
+transformers==4.39.3
+
+# --- Detection & face ---
+mediapipe==0.10.9
+insightface==0.7.3
+ultralytics==8.1.42
+
+# --- CLIP aesthetic head ---
+huggingface-hub==0.22.2
+
+# --- API / server ---
+fastapi==0.110.2
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# --- Optional parallel backend (Ray auto-falls back to joblib) ---
+ray==2.35.0
+joblib==1.4.2
