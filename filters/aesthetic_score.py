@@ -1,11 +1,22 @@
 # filters/aesthetic_score.py
+from __future__ import annotations
 
 import os
 import torch
 import torch.nn as nn
-from transformers import CLIPProcessor, CLIPModel
+from transformers import CLIPTokenizer, CLIPImageProcessor, CLIPModel
 from PIL import Image
 from typing import Optional
+
+# --- load CLIP once on CPU outside joblib workers ---
+CPU_CLIP = CLIPModel.from_pretrained(
+    "openai/clip-vit-large-patch14",
+    torch_dtype=torch.float32,
+    device_map=None,
+).to("cpu")  # type: ignore # force eager load on CPU
+CPU_TOKENIZER = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+CPU_IMAGE_PROC = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14")
+
 
 class AestheticHead(nn.Module):
     def __init__(self):
@@ -17,69 +28,46 @@ class AestheticHead(nn.Module):
             nn.Linear(64, 16), nn.Linear(16, 1)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         return self.net(x)
 
-class AestheticScorer:
-    """
-    CLIP-based aesthetic scorer with regression head, remapping checkpoint keys.
-    """
 
-    def __init__(self, weights_path: Optional[str] = None):
-        # 1) Device
+class AestheticScorer:
+    """CLIP-based aesthetic scorer (thread-safe)."""
+
+    def __init__(self, weights_path: Optional[str] = None) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 2) CLIP backbone
-        self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)  # type: ignore
-        # 3) CLIP processor
-        self.proc = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")  # type: ignore
+        # Each worker gets its own copy (cloned from CPU)
+        self.clip = CPU_CLIP.to(self.device) # type: ignore
+        self.tokenizer = CPU_TOKENIZER
+        self.image_proc = CPU_IMAGE_PROC
 
-        # 4) Determine weight file path (always ends up a str)
-        if weights_path is None:
-            wp = os.path.join(os.path.dirname(__file__), "ava_logos_linearMSE.pth")
-        else:
-            wp = weights_path
-
+        wp = weights_path or os.path.join(os.path.dirname(__file__), "ava_logos_linearMSE.pth")
         if not os.path.exists(wp):
-            raise FileNotFoundError(f"Aesthetic weights not found: {wp}")
+            raise FileNotFoundError(wp)
 
-        # 5) Load regression head and remap keys
         self.head = AestheticHead().to(self.device)
-        raw_state = torch.load(wp, map_location=self.device)
-        mapped = {k.replace("layers", "net"): v for k, v in raw_state.items()}
-        self.head.load_state_dict(mapped, strict=True)
+        state = torch.load(wp, map_location=self.device)
+        self.head.load_state_dict({k.replace("layers", "net"): v for k, v in state.items()}, strict=True)
         self.head.eval()
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def score(self, image) -> float:
-        """
-        Returns a normalized aesthetic score in [0,1]. Accepts a PIL.Image or a file path.
-        """
         if isinstance(image, str):
             image = Image.open(image).convert("RGB")
-
-        inputs = self.proc(images=image, return_tensors="pt")  # type: ignore
-        # Move tensors to device
-        for k, v in inputs.items():
-            if isinstance(v, torch.Tensor):
-                inputs[k] = v.to(self.device)
-
+        pixel = self.image_proc(image, return_tensors="pt").pixel_values.to(self.device)
         with torch.no_grad():
-            feats = self.clip.get_image_features(**inputs)  # type: ignore
-            feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-            out = self.head(feats).squeeze().cpu().item()
-
-        return float(max(0.0, min(1.0, out)))
+            feat = self.clip.get_image_features(pixel)
+            feat = feat / feat.norm(p=2, dim=-1, keepdim=True)
+            score = self.head(feat).squeeze().cpu().item()
+        return float(max(0.0, min(1.0, score)))
 
     def _extract_clip_features_batch(self, pil_images):
-        """
-        Batch CLIP feature extraction for a list of PIL.Images.
-        """
-        inputs = self.proc(images=pil_images, return_tensors="pt")  # type: ignore
-        for k, v in inputs.items():
-            if isinstance(v, torch.Tensor):
-                inputs[k] = v.to(self.device)
-
+        pixel = self.image_proc(pil_images, return_tensors="pt").pixel_values.to(self.device)
         with torch.no_grad():
-            feats = self.clip.get_image_features(**inputs)  # type: ignore
+            feats = self.clip.get_image_features(pixel)
             feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
         return feats.cpu().numpy()
