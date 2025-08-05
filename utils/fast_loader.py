@@ -1,25 +1,21 @@
-# utils/fast_loader.py
-"""
-TurboJPEG + EXIF-rotate + down-scale only.
-Blur rejection kept; exposure is left to the pipeline.
-"""
+#utils/fast_loader.py
 import os
+import logging
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
 from turbojpeg import TurboJPEG  # type: ignore
 
 _jpeg = TurboJPEG()
-
 MAX_EDGE = 640
-BLUR_REJECT = 20        # variance of Laplacian
-
+BLUR_REJECT = 20  # variance of Laplacian
 
 def _blur_score(gray: np.ndarray) -> float:
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
-
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 def fast_imread(path: str) -> Optional[np.ndarray]:
     """Return down-scaled BGR or None if unreadable / too blurry."""
@@ -32,7 +28,6 @@ def fast_imread(path: str) -> Optional[np.ndarray]:
             pil = Image.open(path)
             pil = ImageOps.exif_transpose(pil)
             rgb = np.array(pil)
-
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
         # Down-scale
@@ -44,8 +39,9 @@ def fast_imread(path: str) -> Optional[np.ndarray]:
 
         # Cheap blur gate only
         if _blur_score(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)) < BLUR_REJECT:
+            logger.warning(f"Image too blurry (score < {BLUR_REJECT}): {path}")
             return None
-
         return bgr
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to load image {path}: {str(e)}")
         return None
