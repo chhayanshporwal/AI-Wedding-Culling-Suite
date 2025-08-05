@@ -1,5 +1,4 @@
-# pipeline.py
-# v2.6 – 640 px compression, VIPs must pass every gate, safe None handling
+#pipeline.py
 import os
 import csv
 import shutil
@@ -16,6 +15,7 @@ from tqdm_joblib import tqdm_joblib  # type: ignore
 
 import config
 from logging_config import setup_logging
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 from utils.fast_loader import fast_imread  # returns np.ndarray | None
 
 # ---------- FILTER IMPORTS ----------
-from filters.person_filter      import detect_persons
-from filters.face_id_filter     import load_vip_embeddings, match_vips, detect_faces
-from filters.blur_filter        import blur_score
-from filters.exposure_filter    import exposure_score
+from filters.person_filter import detect_persons
+from filters.face_id_filter import load_vip_embeddings, match_vips, detect_faces
+from filters.blur_filter import blur_score
+from filters.exposure_filter import exposure_score
 from filters.eyes_closed_filter import is_eyes_closed
-from filters.aesthetic_filter   import aesthetic_score, AestheticScorer
-from filters.duplicate_filter   import DuplicateFilter
+from filters.aesthetic_filter import aesthetic_score, AestheticScorer
+from filters.duplicate_filter import DuplicateFilter
 
 # ---------- WORKER ----------
 def init_worker():
@@ -56,19 +56,20 @@ def process_image(path: str) -> Dict[str, Any]:
         "vip_matches": [],
         "clip_embedding": None,
     }
+
     if img is None:
+        logger.warning(f"Skipping invalid image: {path}")
         return base
 
     h, w = img.shape[:2]
-
     persons = detect_persons(img) or []
-    faces   = detect_faces(img)   or []
-    vips    = match_vips(img, config.VIP_COSINE_THRESH) or []
-    eyes    = is_eyes_closed(img, config.EAR_THRESHOLD)
+    faces = detect_faces(img) or []
+    vips = match_vips(img, config.VIP_COSINE_THRESH) or []
+    eyes = is_eyes_closed(img, config.EAR_THRESHOLD)  # Now thread-safe
 
     pil_img = Image.fromarray(img[..., ::-1])
-    scorer  = AestheticScorer(weights_path=config.AESTHETIC_WEIGHTS)
-    emb     = scorer._extract_clip_features_batch([pil_img])[0]
+    scorer = AestheticScorer(weights_path=config.AESTHETIC_WEIGHTS)
+    emb = scorer._extract_clip_features_batch([pil_img])[0]
 
     return {
         **base,
@@ -89,12 +90,12 @@ def process_image(path: str) -> Dict[str, Any]:
 def write_xmp(path: str):
     xmp_path = os.path.splitext(path)[0] + ".xmp"
     xmp = (
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
-        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
-        '<rdf:Description rdf:about="" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">'
-        '<photoshop:Urgency>1</photoshop:Urgency>'
-        '<photoshop:Category>WeddingKeep</photoshop:Category>'
-        '</rdf:Description></rdf:RDF></x:xmpmeta>'
+        ''
+        ''
+        ''
+        '1'
+        'WeddingKeep'
+        ''
     )
     with open(xmp_path, "w") as f:
         f.write(xmp)
@@ -106,18 +107,18 @@ def run_filtering(
     max_workers: Optional[int] = None,
 ) -> Optional[str]:
     load_vip_embeddings()
-
-    exts  = tuple(config.IMAGE_EXTENSIONS or [])
+    exts = tuple(config.IMAGE_EXTENSIONS or [])
     files = [os.path.join(input_folder, f) for f in sorted(os.listdir(input_folder))
              if f.lower().endswith(exts)]
     if not files:
         logger.error("No images found in '%s'", input_folder)
         return None
 
-    stamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(output_base, stamp)
     os.makedirs(out_dir, exist_ok=True)
     logger.info("Processing %d images → %s", len(files), out_dir)
+
     t0 = time.time()
 
     # parallel processing
@@ -140,6 +141,7 @@ def run_filtering(
         emb = r.get("clip_embedding")
         if emb is not None:
             deduper.add(r["path"], emb)
+
     for grp in deduper.cluster():
         if len(grp) < 2:
             continue
@@ -150,9 +152,10 @@ def run_filtering(
 
     # CSV & keepers
     csv_path = os.path.join(out_dir, "log.csv")
-    headers  = ["filename", "blur_score", "exposure_score", "num_persons",
-                "eyes_closed", "aesthetic_score", "is_duplicate",
-                "vip_matches", "reject_reasons"]
+    headers = ["filename", "blur_score", "exposure_score", "num_persons",
+               "eyes_closed", "aesthetic_score", "is_duplicate",
+               "vip_matches", "reject_reasons"]
+
     vip_root = os.path.join(out_dir, "by_vip")
     os.makedirs(vip_root, exist_ok=True)
 
@@ -163,9 +166,8 @@ def run_filtering(
             if r is None:
                 continue
             reasons: list[str] = []
-
-            blur   = r["blur_score"]
-            exp    = r["exposure_score"]
+            blur = r["blur_score"]
+            exp = r["exposure_score"]
             is_vip = bool(r["vip_matches"])
 
             # 🔴 VIPs are NOT exempt
@@ -201,6 +203,7 @@ def run_filtering(
                 except OSError:
                     shutil.copy2(src, dst)
                 write_xmp(dst)
+
                 for vip, _ in r["vip_matches"]:
                     vip_dir = os.path.join(vip_root, vip)
                     os.makedirs(vip_dir, exist_ok=True)
