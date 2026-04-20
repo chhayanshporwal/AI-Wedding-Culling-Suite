@@ -28,7 +28,7 @@ from filters.face_id_filter import load_vip_embeddings, match_vips, detect_faces
 from filters.blur_filter import blur_score
 from filters.exposure_filter import exposure_score
 from filters.eyes_closed_filter import is_eyes_closed
-from filters.aesthetic_filter import aesthetic_score, AestheticScorer
+from filters.aesthetic_filter import aesthetic_score, get_clip_embedding
 from filters.duplicate_filter import DuplicateFilter
 
 # ---------- WORKER ----------
@@ -64,12 +64,12 @@ def process_image(path: str) -> Dict[str, Any]:
     h, w = img.shape[:2]
     persons = detect_persons(img) or []
     faces = detect_faces(img) or []
-    vips = match_vips(img, config.VIP_COSINE_THRESH) or []
+    # Optimization: Pass detected faces to avoid re-detection
+    vips = match_vips(img, config.VIP_COSINE_THRESH, known_face_boxes=faces) or []
     eyes = is_eyes_closed(img, config.EAR_THRESHOLD)  # Now thread-safe
 
-    pil_img = Image.fromarray(img[..., ::-1])
-    scorer = AestheticScorer(weights_path=config.AESTHETIC_WEIGHTS)
-    emb = scorer._extract_clip_features_batch([pil_img])[0]
+    # Use global embedding extractor
+    emb = get_clip_embedding(img)
 
     return {
         **base,
@@ -86,19 +86,7 @@ def process_image(path: str) -> Dict[str, Any]:
         "clip_embedding": emb,
     }
 
-# ---------- XMP ----------
-def write_xmp(path: str):
-    xmp_path = os.path.splitext(path)[0] + ".xmp"
-    xmp = (
-        ''
-        ''
-        ''
-        '1'
-        'WeddingKeep'
-        ''
-    )
-    with open(xmp_path, "w") as f:
-        f.write(xmp)
+
 
 # ---------- MAIN ----------
 def run_filtering(
@@ -202,7 +190,7 @@ def run_filtering(
                     os.link(src, dst)
                 except OSError:
                     shutil.copy2(src, dst)
-                write_xmp(dst)
+                # XMP generation removed as per user request
 
                 for vip, _ in r["vip_matches"]:
                     vip_dir = os.path.join(vip_root, vip)
