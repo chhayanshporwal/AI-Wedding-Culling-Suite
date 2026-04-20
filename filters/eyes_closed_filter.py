@@ -3,7 +3,6 @@ import logging
 import threading
 import cv2
 import numpy as np
-import mediapipe as mp  # type: ignore
 
 # Thread-local storage for MediaPipe instances (to make it thread-safe)
 local = threading.local()
@@ -13,13 +12,30 @@ logger = logging.getLogger(__name__)
 LEFT_EYE_IDX = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE_IDX = [263, 387, 385, 362, 380, 373]
 
+HAS_MEDIAPIPE = False
+try:
+    import mediapipe as mp  # type: ignore
+    if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
+        mp_face_mesh = mp.solutions.face_mesh
+        HAS_MEDIAPIPE = True
+    else:
+        # Try finding it in submodules if root namespace is empty
+        import mediapipe.python.solutions.face_mesh
+        mp_face_mesh = mediapipe.python.solutions.face_mesh
+        HAS_MEDIAPIPE = True
+except (ImportError, AttributeError):
+    logger.warning("MediaPipe FaceMesh not available. 'Eyes Closed' filter will be disabled.")
+    mp_face_mesh = None
+
 def get_face_mesh():
     """
     Get or create a thread-local MediaPipe FaceMesh instance.
-    This ensures each thread has its own independent graph, avoiding timestamp conflicts.
     """
+    if not HAS_MEDIAPIPE:
+        return None
+        
     if not hasattr(local, "mp_face_mesh"):
-        local.mp_face_mesh = mp.solutions.face_mesh.FaceMesh( # type: ignore
+        local.mp_face_mesh = mp_face_mesh.FaceMesh( # type: ignore
             static_image_mode=True,
             refine_landmarks=True,
             min_detection_confidence=0.5
@@ -57,6 +73,9 @@ def is_eyes_closed(image: np.ndarray, ear_threshold: float = 0.2) -> bool:
 
     img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_face_mesh = get_face_mesh()
+    if mp_face_mesh is None:
+        return False
+
     results = mp_face_mesh.process(img_rgb)  # type: ignore
 
     if not results.multi_face_landmarks:

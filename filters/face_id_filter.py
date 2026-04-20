@@ -24,12 +24,21 @@ INDEX_FILE = os.path.join(EMB_DIR, "index.json")
 # In-memory map: VIP name → averaged, normalized embedding
 VIP_EMBS: Dict[str, np.ndarray] = {}
 
-# Unified face detector: MTCNN for both enrollment and matching
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-mtcnn = MTCNN(keep_all=True, device=device)
+import threading
 
-# FaceNet embedding model
-resnet = InceptionResnetV1(pretrained="vggface2").eval().to(device)
+# Thread-local storage for models
+local = threading.local()
+
+# Define device globally
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def get_models():
+    """Get or create thread-local MTCNN and ResNet instances."""
+    if not hasattr(local, "mtcnn"):
+        local.mtcnn = MTCNN(keep_all=True, device=device)
+    if not hasattr(local, "resnet"):
+        local.resnet = InceptionResnetV1(pretrained="vggface2").eval().to(device)
+    return local.mtcnn, local.resnet
 
 
 def load_vip_embeddings() -> None:
@@ -71,6 +80,7 @@ def detect_faces(image: np.ndarray) -> List[Tuple[int, int, int, int]]:
     Detect faces using MTCNN, returning pixel-space boxes (x1, y1, x2, y2).
     """
     try:
+        mtcnn, _ = get_models()
         pil = Image.fromarray(image[..., ::-1])
         found = mtcnn.detect(pil)
         boxes = found[0] if found and found[0] is not None else None
@@ -85,29 +95,48 @@ def detect_faces(image: np.ndarray) -> List[Tuple[int, int, int, int]]:
         logger.error("Error during face detection: %s", e)
         return []
 
-def match_vips(image: np.ndarray, thresh: float = config.VIP_COSINE_THRESH) -> List[Tuple[str, float]]:
+def match_vips(
+    image: np.ndarray, 
+    thresh: float = config.VIP_COSINE_THRESH, 
+    known_face_boxes: List[Tuple[int, int, int, int]] = None
+) -> List[Tuple[str, float]]:
     """
-    Detect faces, compute embeddings, and return list of
-    (VIP_name, cosine_similarity) for all VIPs with similarity ≥ thresh.
+    Compute embeddings for faces and return list of (VIP_name, cosine_similarity).
+    If known_face_boxes is provided, skips detection step for speed.
     """
     load_vip_embeddings()
     if not VIP_EMBS:
         return []
 
-    face_boxes = detect_faces(image)
+    if known_face_boxes is not None:
+        face_boxes = known_face_boxes
+    else:
+        face_boxes = detect_faces(image)
+        
     if not face_boxes:
         return []
 
     pil_img = Image.fromarray(image[..., ::-1])
     matches: List[Tuple[str, float]] = []
+    
+    _, resnet = get_models()
 
     for (x1, y1, x2, y2) in face_boxes:
         try:
+            # Clamp coordinates to image bounds
+            w, h = pil_img.size
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            
+            if x2 <= x1 or y2 <= y1:
+                continue
+
             crop = pil_img.crop((x1, y1, x2, y2)).resize((160, 160))
             arr = np.array(crop)
             t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).float() / 255.0
             t = (t - 0.5) / 0.5
             t = t.to(device)
+            
             with torch.no_grad():
                 emb = resnet(t).cpu().numpy()[0]
             emb = emb / (np.linalg.norm(emb) + 1e-8)

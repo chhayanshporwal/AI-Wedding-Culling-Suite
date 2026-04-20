@@ -1,12 +1,18 @@
-#utils/fast_loader.py
 import os
 import logging
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
-from turbojpeg import TurboJPEG  # type: ignore
 
-_jpeg = TurboJPEG()
+logger = logging.getLogger(__name__)
+
+try:
+    from turbojpeg import TurboJPEG  # type: ignore
+    _jpeg = TurboJPEG()
+except (ImportError, Exception):
+    _jpeg = None
+    logger.warning("TurboJPEG not available; falling back to slower PIL/OpenCV loading.")
+
 MAX_EDGE = 640
 BLUR_REJECT = 20  # variance of Laplacian
 
@@ -15,19 +21,27 @@ def _blur_score(gray: np.ndarray) -> float:
 
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 def fast_imread(path: str) -> Optional[np.ndarray]:
     """Return down-scaled BGR or None if unreadable / too blurry."""
     try:
         ext = os.path.splitext(path)[1].lower()
-        if ext in {".jpg", ".jpeg"}:
-            with open(path, "rb") as f:
-                rgb = _jpeg.decode(f.read())
-        else:
+        rgb = None
+        
+        # Try TurboJPEG if available and file is jpeg
+        if _jpeg and ext in {".jpg", ".jpeg"}:
+            try:
+                with open(path, "rb") as f:
+                    rgb = _jpeg.decode(f.read())
+            except Exception:
+                # Fallback if decode fails
+                pass
+        
+        # Fallback to PIL if rgb is still None
+        if rgb is None:
             pil = Image.open(path)
             pil = ImageOps.exif_transpose(pil)
             rgb = np.array(pil)
+            
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
         # Down-scale
