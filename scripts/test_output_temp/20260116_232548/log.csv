@@ -1,4 +1,0 @@
-filename,blur_score,exposure_score,num_persons,eyes_closed,aesthetic_score,is_duplicate,vip_matches,reject_reasons
-test1.jpg,193.25919679745482,111.29896484375,0,False,1.0,,,no_person
-test2.jpg,193.25919679745482,111.29896484375,0,False,1.0,True,,no_person;duplicate
-test3.jpg,193.25919679745482,111.29896484375,0,False,1.0,True,,no_person;duplicate
